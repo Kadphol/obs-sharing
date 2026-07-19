@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Frontend Observability — Team Sharing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0e14;
+    --bg-panel: #0f141d;
+    --bg-raise: #131a26;
+    --line: #1d2635;
+    --line-soft: #16202e;
+    --ink: #e6e9ef;
+    --ink-dim: #8a94a6;
+    --ink-faint: #4c5668;
+    --trace: #39bae6;   /* cyan  — traces */
+    --log: #7fd962;     /* green — logs */
+    --metric: #ffb454;  /* amber — metrics */
+    --error: #f26d78;   /* red   — errors */
+    --analytic: #d2a6ff;/* violet— analytics */
+    --font-display: "Bricolage Grotesque", "Avenir Next", sans-serif;
+    --font-mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--ink); }
+  body { font-family: var(--font-display); font-size: clamp(14px, 1.35vw, 19px); }
+
+  /* ── dashboard grid backdrop ─────────────────────────── */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image:
+      linear-gradient(var(--line-soft) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line-soft) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: radial-gradient(ellipse 90% 90% at 50% 40%, black 30%, transparent 100%);
+  }
+
+  /* ── deck plumbing ───────────────────────────────────── */
+  .slide {
+    position: fixed; inset: 0; z-index: 1;
+    display: none;
+    padding: clamp(2rem, 5vh, 4rem) clamp(2.5rem, 6vw, 6rem);
+    flex-direction: column;
+  }
+  .slide.active { display: flex; }
+  .slide.active .rv { animation: rise .55s cubic-bezier(.2,.7,.2,1) both; }
+  .slide.active .rv:nth-child(2), .slide.active .rv.d1 { animation-delay: .08s; }
+  .slide.active .rv:nth-child(3), .slide.active .rv.d2 { animation-delay: .16s; }
+  .slide.active .rv:nth-child(4), .slide.active .rv.d3 { animation-delay: .24s; }
+  .slide.active .rv:nth-child(5), .slide.active .rv.d4 { animation-delay: .32s; }
+  .slide.active .rv:nth-child(6), .slide.active .rv.d5 { animation-delay: .40s; }
+  @keyframes rise { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+
+  /* ── chrome: header chip, counter, progress ──────────── */
+  .chip {
+    font-family: var(--font-mono); font-size: .62em; letter-spacing: .18em;
+    color: var(--ink-dim); text-transform: uppercase;
+    display: inline-flex; align-items: center; gap: .7em;
+    margin-bottom: clamp(1rem, 3vh, 2.2rem);
+  }
+  .chip::before { content: ""; width: .65em; height: .65em; border-radius: 2px; background: var(--c, var(--ink-faint)); box-shadow: 0 0 12px var(--c, transparent); }
+  #hud {
+    position: fixed; right: clamp(2.5rem, 6vw, 6rem); top: clamp(2rem, 5vh, 4rem);
+    font-family: var(--font-mono); font-size: .68rem; color: var(--ink-faint);
+    letter-spacing: .15em; z-index: 5;
+  }
+  #bar { position: fixed; left: 0; bottom: 0; height: 3px; width: 100%; background: var(--line-soft); z-index: 5; }
+  #bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--trace), var(--log), var(--metric)); transition: width .35s cubic-bezier(.2,.7,.2,1); }
+  #keys {
+    position: fixed; left: clamp(2.5rem, 6vw, 6rem); bottom: 1.1rem; z-index: 5;
+    font-family: var(--font-mono); font-size: .62rem; color: var(--ink-faint); letter-spacing: .12em;
+  }
+
+  /* ── type scale ──────────────────────────────────────── */
+  h1 { font-size: clamp(2.6rem, 7.5vw, 6.2rem); font-weight: 750; line-height: .98; letter-spacing: -.025em; }
+  h2 { font-size: clamp(1.9rem, 4.4vw, 3.4rem); font-weight: 700; line-height: 1.04; letter-spacing: -.02em; margin-bottom: clamp(1rem, 3vh, 1.8rem); }
+  .lede { font-size: clamp(1rem, 1.6vw, 1.35rem); color: var(--ink-dim); font-weight: 400; line-height: 1.55; max-width: 34em; }
+  .hl-t { color: var(--trace); } .hl-l { color: var(--log); } .hl-m { color: var(--metric); } .hl-e { color: var(--error); } .hl-a { color: var(--analytic); }
+  .mono { font-family: var(--font-mono); }
+  strong { font-weight: 700; color: var(--ink); }
+
+  /* ── panels & layout helpers ─────────────────────────── */
+  .cols { display: grid; gap: clamp(.8rem, 1.6vw, 1.4rem); flex: 1; min-height: 0; align-content: start; }
+  .cols.c2 { grid-template-columns: 1fr 1fr; }
+  .cols.c3 { grid-template-columns: repeat(3, 1fr); }
+  .panel {
+    background: var(--bg-panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: clamp(1rem, 2vw, 1.6rem);
+  }
+  .panel h3 { font-size: 1.05em; font-weight: 700; margin-bottom: .45em; display: flex; align-items: center; gap: .55em; }
+  .panel h3 .dot { width: .55em; height: .55em; border-radius: 2px; background: var(--c, var(--ink-faint)); box-shadow: 0 0 10px var(--c, transparent); flex: none; }
+  .panel p, .panel li { color: var(--ink-dim); font-size: .82em; line-height: 1.55; }
+  .panel ul { list-style: none; }
+  .panel li { padding-left: 1.2em; position: relative; margin-bottom: .45em; }
+  .panel li::before { content: "▸"; position: absolute; left: 0; color: var(--c, var(--ink-faint)); }
+  .tag { font-family: var(--font-mono); font-size: .6em; letter-spacing: .14em; text-transform: uppercase; color: var(--c, var(--ink-dim)); border: 1px solid currentColor; border-radius: 4px; padding: .25em .6em; opacity: .85; }
+
+  /* ── code blocks ─────────────────────────────────────── */
+  pre {
+    background: #0b0f16; border: 1px solid var(--line); border-radius: 10px;
+    padding: 1.1em 1.3em; overflow: auto;
+    font-family: var(--font-mono); font-size: clamp(.66rem, 1.05vw, .86rem); line-height: 1.65;
+    color: #b3bcc9;
+  }
+  pre .k { color: #d2a6ff; }        /* keyword */
+  pre .f { color: #39bae6; }        /* function */
+  pre .s { color: #7fd962; }        /* string */
+  pre .c { color: #4c5668; font-style: italic; } /* comment */
+  pre .n { color: #ffb454; }        /* number/attr */
+  .code-title { font-family: var(--font-mono); font-size: .62rem; letter-spacing: .15em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: .5rem; }
+
+  /* ── title slide: drifting span bars ─────────────────── */
+  .drift { position: absolute; inset: 0; overflow: hidden; pointer-events: none; opacity: .5; }
+  .drift b {
+    position: absolute; height: 10px; border-radius: 3px; opacity: 0;
+    animation: driftIn 7s linear infinite;
+  }
+  @keyframes driftIn {
+    0% { transform: translateX(-30vw); opacity: 0; }
+    12% { opacity: .55; }
+    88% { opacity: .55; }
+    100% { transform: translateX(115vw); opacity: 0; }
+  }
+
+  /* ── waterfall (spans) ───────────────────────────────── */
+  .wf { display: flex; flex-direction: column; gap: .55em; font-family: var(--font-mono); font-size: clamp(.6rem, 1vw, .8rem); }
+  .wf .row { display: grid; grid-template-columns: 15em 1fr; gap: 1.2em; align-items: center; }
+  .wf .name { color: var(--ink-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+  .wf .lane { position: relative; height: 1.7em; background: var(--line-soft); border-radius: 4px; }
+  .wf .bar {
+    position: absolute; top: 0; bottom: 0; border-radius: 4px;
+    background: color-mix(in srgb, var(--c) 28%, transparent);
+    border: 1px solid var(--c); color: var(--c);
+    display: flex; align-items: center; padding: 0 .6em; font-size: .85em;
+    white-space: nowrap;
+  }
+  .slide.active .wf .bar { animation: grow .7s cubic-bezier(.2,.7,.2,1) both; transform-origin: left; }
+  @keyframes grow { from { transform: scaleX(0); } }
+
+  /* ── architecture flow ───────────────────────────────── */
+  .flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: clamp(.6rem, 1.2vw, 1rem); align-items: stretch; flex: 1; min-height: 0; align-content: center; }
+  .flow .arrow { align-self: center; color: var(--ink-faint); font-family: var(--font-mono); font-size: 1.2em; }
+  .node { background: var(--bg-panel); border: 1px solid var(--line); border-radius: 10px; padding: 1.1em 1.2em; }
+  .node h4 { font-family: var(--font-mono); font-size: .62em; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: .8em; }
+  .node .item { font-size: .78em; padding: .5em .7em; border-radius: 6px; background: var(--bg-raise); border: 1px solid var(--line); margin-bottom: .5em; color: var(--ink); }
+  .node .item small { display: block; color: var(--ink-faint); font-size: .82em; margin-top: .15em; }
+
+  /* ── big-number list (roadmap) ───────────────────────── */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(.9rem, 1.8vw, 1.5rem); flex: 1; align-content: center; }
+  .step { border: 1px solid var(--line); border-radius: 12px; padding: 1.4em 1.3em; background: var(--bg-panel); position: relative; overflow: hidden; }
+  .step::after { content: attr(data-n); position: absolute; right: .1em; top: -.35em; font-size: 5.5em; font-weight: 800; color: var(--line); z-index: 0; font-family: var(--font-display); line-height: 1; }
+  .step > * { position: relative; z-index: 1; }
+  .step h3 { font-size: 1.15em; margin: .6em 0 .5em; }
+  .step p, .step li { color: var(--ink-dim); font-size: .8em; line-height: 1.55; }
+  .step ul { list-style: none; margin-top: .5em; }
+  .step li { padding-left: 1.1em; position: relative; margin-bottom: .35em; }
+  .step li::before { content: "▸"; position: absolute; left: 0; color: var(--c, var(--ink-faint)); }
+
+  .footer-note { margin-top: auto; padding-top: 1rem; font-family: var(--font-mono); font-size: .68rem; color: var(--ink-faint); letter-spacing: .08em; }
+  .kbd { font-family: var(--font-mono); background: var(--bg-raise); border: 1px solid var(--line); border-radius: 4px; padding: .1em .45em; font-size: .85em; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+
+<!-- ═══ 1 · TITLE ═══════════════════════════════════════ -->
+<section class="slide" data-chip="OBS.SHARE / 2026" data-c="var(--trace)">
+  <div class="drift" aria-hidden="true">
+    <b style="top:16%; width:26vw; background:var(--trace); animation-delay:0s"></b>
+    <b style="top:30%; width:14vw; background:var(--log); animation-delay:1.4s"></b>
+    <b style="top:52%; width:33vw; background:var(--metric); animation-delay:2.6s"></b>
+    <b style="top:68%; width:18vw; background:var(--error); animation-delay:3.8s"></b>
+    <b style="top:84%; width:22vw; background:var(--analytic); animation-delay:5s"></b>
+  </div>
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <p class="rv mono" style="color:var(--ink-dim); letter-spacing:.2em; font-size:.75em; text-transform:uppercase; margin-bottom:1.4em;">Team sharing · Frontend chapter</p>
+    <h1 class="rv">Observability<br>for <span class="hl-t">Frontend</span><br>Developers</h1>
+    <p class="rv lede" style="margin-top:1.6em;">What it is, why the browser is the blindest part of your stack, and how to instrument it — <span class="hl-t">traces</span>, <span class="hl-l">logs</span>, <span class="hl-e">errors</span>, <span class="hl-m">monitoring</span>, <span class="hl-a">analytics</span>.</p>
+  </div>
+  <p class="footer-note rv">Navigate with <span class="kbd">←</span> <span class="kbd">→</span> or click</p>
+</section>
+
+<!-- ═══ 2 · THE PROBLEM ════════════════════════════════ -->
+<section class="slide" data-chip="CTX.01 / The problem" data-c="var(--error)">
+  <h2 class="rv">After <span class="hl-e">deploy</span>, we fly blind.</h2>
+  <p class="rv lede" style="margin-bottom:clamp(1rem,3vh,2rem);">Your code runs on devices you don't own, networks you can't see, and browsers you didn't test. The only "monitoring" most frontends have:</p>
+  <div class="cols c3 rv">
+    <div class="panel" style="--c:var(--error)">
+      <h3><span class="dot"></span>The support ticket</h3>
+      <p>"Customer says checkout is broken." No URL, no browser, no steps. You try it — works on your machine. Ticket closed. Customer gone.</p>
+    </div>
+    <div class="panel" style="--c:var(--metric)">
+      <h3><span class="dot"></span>The vague Slack ping</h3>
+      <p>"Is the app slow for anyone else?" You open DevTools on your M3 Max with fiber internet and see 60fps. Meanwhile a user on a mid-range Android with 3G sees 11 seconds to first interaction.</p>
+    </div>
+    <div class="panel" style="--c:var(--trace)">
+      <h3><span class="dot"></span>The backend shrug</h3>
+      <p>Backend dashboards are green. API p99 is 80ms. But the <em>user experience</em> is broken — a render loop, a failed chunk load, a third-party script blocking the main thread. Nobody's graph shows it.</p>
+    </div>
+  </div>
+  <p class="footer-note rv">Backend teams solved this a decade ago. The frontend is where it's still dark.</p>
+</section>
+
+<!-- ═══ 3 · WHAT IS OBSERVABILITY ══════════════════════ -->
+<section class="slide" data-chip="CTX.02 / Definition" data-c="var(--trace)">
+  <h2 class="rv">What is <span class="hl-t">observability</span>?</h2>
+  <p class="rv lede" style="margin-bottom:clamp(1rem,3vh,2rem);">The ability to understand <strong>what's happening inside your system</strong> by looking at the data it emits — without shipping new code to ask new questions.</p>
+  <div class="cols c2 rv">
+    <div class="panel" style="--c:var(--metric)">
+      <h3><span class="dot"></span>Monitoring <span class="tag" style="--c:var(--metric)">known unknowns</span></h3>
+      <ul>
+        <li>You decide <em>in advance</em> what to watch: error rate, LCP, uptime.</li>
+        <li>Answers "<strong>is</strong> something wrong?"</li>
+        <li>Dashboards + alerts on predefined thresholds.</li>
+      </ul>
+    </div>
+    <div class="panel" style="--c:var(--trace)">
+      <h3><span class="dot"></span>Observability <span class="tag" style="--c:var(--trace)">unknown unknowns</span></h3>
+      <ul>
+        <li>Rich, correlated data lets you ask questions you <em>didn't</em> plan for.</li>
+        <li>Answers "<strong>why</strong> is it wrong — for whom, where, since when?"</li>
+        <li>"Checkout errors only on Safari 17, only for users with 40+ cart items, started with release 2.4.1."</li>
+      </ul>
+    </div>
+  </div>
+  <p class="footer-note rv">Monitoring tells you the patient has a fever. Observability lets you run the diagnosis.</p>
+</section>
+
+<!-- ═══ 4 · WHY FRONTEND ═══════════════════════════════ -->
+<section class="slide" data-chip="CTX.03 / Why us" data-c="var(--metric)">
+  <h2 class="rv">Why <span class="hl-m">frontend</span> specifically?</h2>
+  <div class="cols c2 rv" style="grid-template-columns: 1.1fr .9fr;">
+    <div style="display:flex; flex-direction:column; gap:1rem;">
+      <div class="panel" style="--c:var(--metric)">
+        <h3><span class="dot"></span>The browser is a production server you don't control</h3>
+        <p>Thousands of device × browser × network × extension combinations. Your staging environment matches none of them. The only place your app truly runs is the user's tab.</p>
+      </div>
+      <div class="panel" style="--c:var(--error)">
+        <h3><span class="dot"></span>Frontend failures are invisible by default</h3>
+        <p>A backend exception hits a log file. A frontend exception dies silently in a user's console and shows up as… churn. No signal, just missing revenue.</p>
+      </div>
+      <div class="panel" style="--c:var(--trace)">
+        <h3><span class="dot"></span>Perceived performance <em>is</em> the product</h3>
+        <p>Users don't experience your API latency — they experience time-to-interactive, layout shifts, rage clicks. That's measured in the browser or not at all.</p>
+      </div>
+    </div>
+    <div class="panel" style="display:flex; flex-direction:column; justify-content:center; gap:1.4em; text-align:center;">
+      <div>
+        <div style="font-size:2.6em; font-weight:800;" class="hl-e">~70%</div>
+        <p>of user-perceived issues never appear in backend logs — chunk load failures, hydration errors, CORS, third-party scripts, device-specific bugs</p>
+      </div>
+      <div style="border-top:1px solid var(--line); padding-top:1.2em;">
+        <div style="font-size:2.6em; font-weight:800;" class="hl-m">1 in 1000</div>
+        <p>users bother to report a bug. The rest just leave. Instrumentation is how the other 999 file their report automatically.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 5 · THE SIGNALS ════════════════════════════════ -->
+<section class="slide" data-chip="MAP.00 / The signals" data-c="var(--trace)">
+  <h2 class="rv">Five signals, one picture</h2>
+  <p class="rv lede" style="margin-bottom:clamp(1rem,3vh,1.6rem);">Each answers a different question. The power is in <strong>correlating them</strong> — one user session, all five views.</p>
+  <div class="cols rv" style="grid-template-columns:repeat(5,1fr);">
+    <div class="panel" style="--c:var(--trace)">
+      <h3><span class="dot"></span>Traces</h3>
+      <p class="mono" style="font-size:.68em; color:var(--trace); margin-bottom:.6em;">WHERE did time go?</p>
+      <p>The journey of one request or interaction, end-to-end, across frontend and backend.</p>
+    </div>
+    <div class="panel" style="--c:var(--log)">
+      <h3><span class="dot"></span>Logs</h3>
+      <p class="mono" style="font-size:.68em; color:var(--log); margin-bottom:.6em;">WHAT happened?</p>
+      <p>Timestamped, structured events with context. The narrative of your app.</p>
+    </div>
+    <div class="panel" style="--c:var(--error)">
+      <h3><span class="dot"></span>Errors</h3>
+      <p class="mono" style="font-size:.68em; color:var(--error); margin-bottom:.6em;">WHAT broke?</p>
+      <p>Exceptions captured, grouped, and mapped to source — with the release and user context attached.</p>
+    </div>
+    <div class="panel" style="--c:var(--metric)">
+      <h3><span class="dot"></span>Metrics</h3>
+      <p class="mono" style="font-size:.68em; color:var(--metric); margin-bottom:.6em;">HOW healthy?</p>
+      <p>Numbers over time: Core Web Vitals, error rates, API latency from the user's side.</p>
+    </div>
+    <div class="panel" style="--c:var(--analytic)">
+      <h3><span class="dot"></span>Analytics</h3>
+      <p class="mono" style="font-size:.68em; color:var(--analytic); margin-bottom:.6em;">WHAT do users do?</p>
+      <p>Product behavior: funnels, feature adoption, drop-off. Where UX meets business.</p>
+    </div>
+  </div>
+  <p class="footer-note rv">The glue: a shared <span class="mono hl-t">trace_id</span> / <span class="mono hl-a">session_id</span> stamped on every signal.</p>
+</section>
+
+<!-- ═══ 6 · TRACING ════════════════════════════════════ -->
+<section class="slide" data-chip="SIG.01 / Traces" data-c="var(--trace)">
+  <h2 class="rv"><span class="hl-t">Tracing</span> — follow one action end-to-end</h2>
+  <p class="rv lede" style="margin-bottom:clamp(1rem,2.5vh,1.6rem);">A <strong>trace</strong> is the full story of a single user action — a button click — as it crosses the browser, the API gateway, and every backend service. One <span class="mono hl-t">trace_id</span> ties it all together.</p>
+  <div class="panel rv" style="--c:var(--trace)">
+    <p class="code-title">trace_id: 4bf92f35 — "user clicks Place Order" · total 1.24s</p>
+    <div class="wf">
+      <div class="row"><span class="name">click → checkout.submit</span><div class="lane"><span class="bar" style="--c:var(--trace); left:0%; width:100%;">frontend · 1240ms</span></div></div>
+      <div class="row"><span class="name">validate form (JS)</span><div class="lane"><span class="bar" style="--c:var(--trace); left:1%; width:6%; animation-delay:.1s;"></span></div></div>
+      <div class="row"><span class="name">POST /api/orders</span><div class="lane"><span class="bar" style="--c:var(--metric); left:8%; width:62%; animation-delay:.2s;">network + backend · 770ms</span></div></div>
+      <div class="row"><span class="name">└ orders-svc: create</span><div class="lane"><span class="bar" style="--c:var(--metric); left:14%; width:50%; animation-delay:.3s;"></span></div></div>
+      <div class="row"><span class="name">&nbsp;&nbsp;└ db INSERT</span><div class="lane"><span class="bar" style="--c:var(--metric); left:20%; width:38%; animation-delay:.4s;">db · 470ms ⚠</span></div></div>
+      <div class="row"><span class="name">render confirmation</span><div class="lane"><span class="bar" style="--c:var(--log); left:72%; width:27%; animation-delay:.5s;">react render · 335ms ⚠</span></div></div>
+    </div>
+  </div>
+  <p class="footer-note rv">The argument ends here: was it the network, the backend, or our render? The waterfall answers in one look.</p>
+</section>
+
+<!-- ═══ 7 · SPANS ══════════════════════════════════════ -->
+<section class="slide" data-chip="SIG.01 / Spans" data-c="var(--trace)">
+  <h2 class="rv"><span class="hl-t">Spans</span> — the unit of a trace</h2>
+  <div class="cols c2 rv">
+    <div>
+      <p class="lede" style="margin-bottom:1.2em;">A span is <strong>one named, timed operation</strong>. Spans nest: each has a parent, forming the waterfall. A trace is just the tree of spans sharing one <span class="mono hl-t">trace_id</span>.</p>
+      <div class="panel" style="--c:var(--trace)">
+        <h3><span class="dot"></span>Anatomy of a span</h3>
+        <ul>
+          <li><strong>name</strong> — <span class="mono">checkout.submit</span>, <span class="mono">HTTP POST</span></li>
+          <li><strong>trace_id + span_id + parent_id</strong> — position in the tree</li>
+          <li><strong>start / end time</strong> — the duration bar</li>
+          <li><strong>attributes</strong> — <span class="mono">cart.items=12</span>, <span class="mono">user.tier=pro</span></li>
+          <li><strong>status &amp; events</strong> — OK / ERROR, exceptions, retries</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <p class="code-title">span as data (simplified)</p>
+      <pre>{
+  <span class="s">"name"</span>:      <span class="s">"checkout.submit"</span>,
+  <span class="s">"trace_id"</span>:  <span class="s">"4bf92f35…"</span>,
+  <span class="s">"span_id"</span>:   <span class="s">"00f067aa…"</span>,
+  <span class="s">"parent_id"</span>: <span class="k">null</span>,          <span class="c">// root span</span>
+  <span class="s">"start"</span>:     <span class="n">1721286000123</span>,
+  <span class="s">"end"</span>:       <span class="n">1721286001363</span>,
+  <span class="s">"attributes"</span>: {
+    <span class="s">"cart.items"</span>:   <span class="n">12</span>,
+    <span class="s">"app.release"</span>:  <span class="s">"web@2.4.1"</span>,
+    <span class="s">"browser.name"</span>: <span class="s">"Safari 17"</span>
+  },
+  <span class="s">"status"</span>: <span class="s">"ERROR"</span>
+}</pre>
+      <p class="footer-note">Attributes are what make traces <em>queryable</em>: "show me slow checkouts where cart.items &gt; 10".</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 8 · TRACING IN PRACTICE ════════════════════════ -->
+<section class="slide" data-chip="SIG.01 / In practice" data-c="var(--trace)">
+  <h2 class="rv">Tracing in practice — <span class="hl-t">OpenTelemetry</span></h2>
+  <div class="cols c2 rv">
+    <div>
+      <p class="code-title">1 · setup once — auto-instrument fetch &amp; page load</p>
+      <pre><span class="k">import</span> { WebTracerProvider } <span class="k">from</span> <span class="s">'@opentelemetry/sdk-trace-web'</span>;
+<span class="k">import</span> { FetchInstrumentation } <span class="k">from</span> <span class="s">'@opentelemetry/instrumentation-fetch'</span>;
+<span class="k">import</span> { registerInstrumentations } <span class="k">from</span> <span class="s">'@opentelemetry/instrumentation'</span>;
+
+<span class="k">const</span> provider = <span class="k">new</span> <span class="f">WebTracerProvider</span>();
+provider.<span class="f">register</span>();
+
+<span class="f">registerInstrumentations</span>({
+  instrumentations: [<span class="k">new</span> <span class="f">FetchInstrumentation</span>({
+    <span class="c">// injects the traceparent header → links FE span to BE trace</span>
+    propagateTraceHeaderCorsUrls: [<span class="s">/api\.ourapp\.com/</span>],
+  })],
+});</pre>
+    </div>
+    <div>
+      <p class="code-title">2 · custom span around business logic</p>
+      <pre><span class="k">const</span> tracer = trace.<span class="f">getTracer</span>(<span class="s">'checkout'</span>);
+
+<span class="k">async function</span> <span class="f">placeOrder</span>(cart) {
+  <span class="k">const</span> span = tracer.<span class="f">startSpan</span>(<span class="s">'checkout.submit'</span>);
+  span.<span class="f">setAttribute</span>(<span class="s">'cart.items'</span>, cart.length);
+  <span class="k">try</span> {
+    <span class="k">return await</span> <span class="f">submitOrder</span>(cart);
+  } <span class="k">catch</span> (err) {
+    span.<span class="f">recordException</span>(err);
+    span.<span class="f">setStatus</span>({ code: SpanStatusCode.ERROR });
+    <span class="k">throw</span> err;
+  } <span class="k">finally</span> {
+    span.<span class="f">end</span>();
+  }
+}</pre>
+      <p class="footer-note">Magic ingredient: the <span class="mono hl-t">traceparent</span> HTTP header. Backend picks it up → your click and their DB query share one trace.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 9 · LOGS ═══════════════════════════════════════ -->
+<section class="slide" data-chip="SIG.02 / Logs" data-c="var(--log)">
+  <h2 class="rv"><span class="hl-l">Logs</span> — structured, or they're just noise</h2>
+  <div class="cols c2 rv">
+    <div>
+      <p class="code-title">✗ what we all do today</p>
+      <pre><span class="f">console</span>.<span class="f">log</span>(<span class="s">'checkout failed'</span>, err);
+<span class="c">// dies in the user's console.
+// unsearchable, no context, gone forever.</span></pre>
+      <p class="code-title" style="margin-top:1.2rem;">✓ structured + shipped + correlated</p>
+      <pre>logger.<span class="f">error</span>(<span class="s">'checkout.failed'</span>, {
+  order_id:  order.id,
+  user_tier: user.tier,
+  release:   <span class="s">'web@2.4.1'</span>,
+  trace_id:  span.<span class="f">spanContext</span>().traceId, <span class="c">// ← the glue</span>
+});</pre>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:1rem;">
+      <div class="panel" style="--c:var(--log)">
+        <h3><span class="dot"></span>Rules for useful frontend logs</h3>
+        <ul>
+          <li><strong>Structured JSON</strong>, not prose — machines search them, not humans.</li>
+          <li><strong>Event names as identifiers</strong>: <span class="mono">checkout.failed</span>, not "Oops something went wrong!!"</li>
+          <li>Always attach <span class="mono">trace_id</span>, <span class="mono">session_id</span>, <span class="mono">release</span>.</li>
+          <li><strong>Sample &amp; batch</strong> — don't fire a network request per log line; buffer and flush.</li>
+          <li><strong>Never log PII</strong> — emails, tokens, card data. Scrub at the source.</li>
+        </ul>
+      </div>
+      <div class="panel" style="--c:var(--log)">
+        <h3><span class="dot"></span>The payoff</h3>
+        <p>Error dashboard shows a spike → click through to the trace → see the logs of <em>that exact session</em>, in order. Debugging goes from archaeology to reading a story.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 10 · ERRORS ════════════════════════════════════ -->
+<section class="slide" data-chip="SIG.03 / Errors" data-c="var(--error)">
+  <h2 class="rv"><span class="hl-e">Error tracking</span> — the 999 silent reports</h2>
+  <div class="cols c2 rv">
+    <div style="display:flex; flex-direction:column; gap:1rem;">
+      <div class="panel" style="--c:var(--error)">
+        <h3><span class="dot"></span>What a real error tracker adds over try/catch</h3>
+        <ul>
+          <li><strong>Global capture</strong> — <span class="mono">onerror</span>, unhandled rejections, React error boundaries.</li>
+          <li><strong>Grouping</strong> — 40,000 events → 12 distinct issues, ranked by users affected.</li>
+          <li><strong>Source maps</strong> — <span class="mono">a.min.js:1:48211</span> becomes <span class="mono">Checkout.tsx:57</span>. Non-negotiable: upload them in CI.</li>
+          <li><strong>Release tracking</strong> — "introduced in web@2.4.1" → instant suspect: that release's diff.</li>
+          <li><strong>Context</strong> — browser, OS, breadcrumbs (last N clicks/requests before the crash).</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <p class="code-title">sentry (or glitchtip / bugsnag / rollbar) — 10 lines</p>
+      <pre>Sentry.<span class="f">init</span>({
+  dsn: <span class="s">'https://…@sentry.io/123'</span>,
+  release: <span class="s">'web@2.4.1'</span>,        <span class="c">// match your CI tag</span>
+  environment: <span class="s">'production'</span>,
+  tracesSampleRate: <span class="n">0.1</span>,       <span class="c">// perf traces, 10%</span>
+  beforeSend(event) {
+    <span class="k">return</span> <span class="f">scrubPII</span>(event);     <span class="c">// your gate</span>
+  },
+});
+
+<span class="c">// React: catch render crashes gracefully</span>
+&lt;Sentry.ErrorBoundary fallback={&lt;CrashScreen /&gt;}&gt;
+  &lt;App /&gt;
+&lt;/Sentry.ErrorBoundary&gt;</pre>
+      <p class="footer-note">If you adopt only <strong>one</strong> thing from this talk, adopt this. Highest value ÷ effort in observability.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 11 · MONITORING / RUM ══════════════════════════ -->
+<section class="slide" data-chip="SIG.04 / Monitoring" data-c="var(--metric)">
+  <h2 class="rv"><span class="hl-m">Monitoring</span> — Real User Monitoring &amp; Web Vitals</h2>
+  <div class="cols c2 rv" style="grid-template-columns:.95fr 1.05fr;">
+    <div style="display:flex; flex-direction:column; gap:1rem;">
+      <div class="panel" style="--c:var(--metric)">
+        <h3><span class="dot"></span>Core Web Vitals — the user's stopwatch</h3>
+        <ul>
+          <li><strong>LCP</strong> — Largest Contentful Paint · "when did the page <em>look</em> ready?" · good &lt; <span class="mono hl-m">2.5s</span></li>
+          <li><strong>INP</strong> — Interaction to Next Paint · "did my click respond?" · good &lt; <span class="mono hl-m">200ms</span></li>
+          <li><strong>CLS</strong> — Cumulative Layout Shift · "did the page jump under my finger?" · good &lt; <span class="mono hl-m">0.1</span></li>
+        </ul>
+      </div>
+      <div class="panel" style="--c:var(--metric)">
+        <h3><span class="dot"></span>Lab vs field</h3>
+        <p><strong>Lighthouse</strong> = lab: one synthetic run, your hardware. <strong>RUM</strong> = field: distribution across every real user. You need the field data — track the <strong>p75</strong>, not the average, and segment by device &amp; country.</p>
+      </div>
+    </div>
+    <div>
+      <p class="code-title">web-vitals — the whole integration</p>
+      <pre><span class="k">import</span> { onLCP, onINP, onCLS } <span class="k">from</span> <span class="s">'web-vitals'</span>;
+
+<span class="k">function</span> <span class="f">send</span>(metric) {
+  navigator.<span class="f">sendBeacon</span>(<span class="s">'/rum'</span>, JSON.<span class="f">stringify</span>({
+    name:   metric.name,        <span class="c">// 'LCP' | 'INP' | 'CLS'</span>
+    value:  metric.value,
+    rating: metric.rating,      <span class="c">// 'good' | 'poor'…</span>
+    page:   location.pathname,
+    release: <span class="s">'web@2.4.1'</span>,
+  }));
+}
+
+<span class="f">onLCP</span>(send); <span class="f">onINP</span>(send); <span class="f">onCLS</span>(send);</pre>
+      <p class="footer-note">Then: dashboard the p75 per page, alert when a release regresses it. Perf stops being vibes.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 12 · ANALYTICS ═════════════════════════════════ -->
+<section class="slide" data-chip="SIG.05 / Analytics" data-c="var(--analytic)">
+  <h2 class="rv"><span class="hl-a">Analytics</span> — observability for product behavior</h2>
+  <div class="cols c2 rv">
+    <div style="display:flex; flex-direction:column; gap:1rem;">
+      <div class="panel" style="--c:var(--analytic)">
+        <h3><span class="dot"></span>Different question, same discipline</h3>
+        <p>Observability asks "is the system healthy?" Analytics asks "<strong>are users succeeding?</strong>" A checkout can be error-free, fast — and still lose 60% of users on step 2. That's a product bug no error tracker will file.</p>
+      </div>
+      <div class="panel" style="--c:var(--analytic)">
+        <h3><span class="dot"></span>What to track (and what not)</h3>
+        <ul>
+          <li><strong>Events, not pageviews</strong>: <span class="mono">checkout.step_completed</span>, <span class="mono">search.no_results</span>.</li>
+          <li>A <strong>tracking plan</strong> — a reviewed schema, same rigor as an API contract. No free-form event names.</li>
+          <li>Funnels &amp; session replay (PostHog, Amplitude, GA4) — replay pairs beautifully with error tracking.</li>
+          <li><strong>Consent &amp; PII</strong>: respect the cookie banner, anonymize IDs. PDPA/GDPR apply to us, not just legal.</li>
+        </ul>
+      </div>
+    </div>
+    <div>
+      <p class="code-title">the crossover superpower</p>
+      <pre><span class="c">// same session_id across ALL signals</span>
+analytics.<span class="f">track</span>(<span class="s">'checkout.step_completed'</span>, {
+  step: <span class="n">2</span>,
+  session_id: sid,   <span class="c">// ← joins analytics…</span>
+});
+
+logger.<span class="f">info</span>(<span class="s">'payment.method_selected'</span>, {
+  session_id: sid,   <span class="c">// ← …to logs…</span>
+  trace_id: tid,     <span class="c">// ← …to traces &amp; errors</span>
+});</pre>
+      <div class="panel" style="--c:var(--analytic); margin-top:1rem;">
+        <h3><span class="dot"></span>Now you can answer</h3>
+        <p>"Users who hit the <span class="mono hl-e">payment.timeout</span> error — how many completed checkout later? Which step did the rest abandon?" Engineering data meets product data.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 13 · ARCHITECTURE ══════════════════════════════ -->
+<section class="slide" data-chip="SYS.01 / Architecture" data-c="var(--trace)">
+  <h2 class="rv">How it fits together</h2>
+  <div class="flow rv">
+    <div class="node">
+      <h4>Browser — SDKs</h4>
+      <div class="item" style="border-color:var(--trace)">OpenTelemetry Web<small>traces, spans, fetch auto-instr.</small></div>
+      <div class="item" style="border-color:var(--error)">Sentry SDK<small>errors, source maps, replay</small></div>
+      <div class="item" style="border-color:var(--metric)">web-vitals<small>LCP · INP · CLS beacons</small></div>
+      <div class="item" style="border-color:var(--analytic)">PostHog / GA4<small>product events</small></div>
+    </div>
+    <div class="arrow">──▶</div>
+    <div class="node">
+      <h4>Pipeline</h4>
+      <div class="item">OTel Collector<small>receive · batch · scrub PII · sample · route</small></div>
+      <div class="item">Your <span class="mono">/rum</span> endpoint<small>or vendor ingest — never expose raw backend creds to the browser</small></div>
+    </div>
+    <div class="arrow">──▶</div>
+    <div class="node">
+      <h4>Storage + Query</h4>
+      <div class="item" style="border-color:var(--trace)">Tempo / Jaeger<small>traces</small></div>
+      <div class="item" style="border-color:var(--log)">Loki / Elastic<small>logs</small></div>
+      <div class="item" style="border-color:var(--metric)">Prometheus / Mimir<small>metrics</small></div>
+      <div class="item">Grafana on top<small>one UI, correlated by trace_id</small></div>
+    </div>
+  </div>
+  <p class="footer-note rv">Shortcut: a vendor (Sentry, Datadog, Grafana Cloud, New Relic) collapses the last two columns into "their problem". Start there; self-host when cost or data-residency says so.</p>
+</section>
+
+<!-- ═══ 14 · ROADMAP ═══════════════════════════════════ -->
+<section class="slide" data-chip="PLAN.01 / Roadmap" data-c="var(--log)">
+  <h2 class="rv">Adoption roadmap — crawl, walk, run</h2>
+  <div class="steps rv">
+    <div class="step" data-n="1" style="--c:var(--error)">
+      <span class="tag" style="--c:var(--error)">Week 1 · crawl</span>
+      <h3>See the crashes</h3>
+      <ul>
+        <li>Error tracker SDK in production</li>
+        <li>Source maps uploaded in CI</li>
+        <li>Release tagging on every deploy</li>
+        <li>One React error boundary at app root</li>
+        <li>Alert to Slack: new issue / regression</li>
+      </ul>
+    </div>
+    <div class="step" data-n="2" style="--c:var(--metric)">
+      <span class="tag" style="--c:var(--metric)">Month 1 · walk</span>
+      <h3>See the experience</h3>
+      <ul>
+        <li>web-vitals beacons → dashboard p75 per page</li>
+        <li>Structured logger util, replace stray console.log</li>
+        <li>Product events for the 1 critical funnel</li>
+        <li>Perf budget check in CI (bundle size, LCP)</li>
+      </ul>
+    </div>
+    <div class="step" data-n="3" style="--c:var(--trace)">
+      <span class="tag" style="--c:var(--trace)">Quarter · run</span>
+      <h3>See the whole story</h3>
+      <ul>
+        <li>OTel tracing with <span class="mono">traceparent</span> → backend</li>
+        <li>trace_id stamped on logs + errors + events</li>
+        <li>Session replay wired to error issues</li>
+        <li>Dashboards per team, alerts on p75 regressions</li>
+      </ul>
+    </div>
+  </div>
+  <p class="footer-note rv">Each step ships value alone. Don't wait for the grand unified platform to start step 1.</p>
+</section>
+
+<!-- ═══ 15 · TAKEAWAYS ═════════════════════════════════ -->
+<section class="slide" data-chip="END / Takeaways" data-c="var(--log)">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <h2 class="rv" style="font-size:clamp(2.2rem,5vw,4rem); margin-bottom:clamp(1.5rem,4vh,2.5rem);">If you remember five things</h2>
+    <div style="display:flex; flex-direction:column; gap:.9em; max-width:52em;">
+      <p class="rv lede d1" style="max-width:none;"><span class="mono hl-e">01</span> &nbsp;The browser is production. Instrument it like you'd instrument a server.</p>
+      <p class="rv lede d2" style="max-width:none;"><span class="mono hl-m">02</span> &nbsp;Users don't file bugs — <strong>SDKs do</strong>. Error tracking first; it pays for itself in a week.</p>
+      <p class="rv lede d3" style="max-width:none;"><span class="mono hl-t">03</span> &nbsp;A trace is a tree of spans; the <span class="mono">traceparent</span> header joins your click to their DB query.</p>
+      <p class="rv lede d4" style="max-width:none;"><span class="mono hl-l">04</span> &nbsp;Correlation beats collection: <span class="mono">trace_id</span> + <span class="mono">session_id</span> on every log, error, and event.</p>
+      <p class="rv lede d5" style="max-width:none;"><span class="mono hl-a">05</span> &nbsp;Measure the field, not the lab — p75 of real users, segmented, per release.</p>
+    </div>
+  </div>
+  <p class="footer-note rv d5">Questions → let's open a dashboard and look at real data together.</p>
+</section>
+
+<div id="hud"></div>
+<div id="bar"><i></i></div>
+<div id="keys">← → SPACE · HOME/END</div>
+
+<script>
+  const slides = [...document.querySelectorAll('.slide')];
+  let i = Math.max(0, Math.min(slides.length - 1, (parseInt(location.hash.slice(1), 10) || 1) - 1));
+
+  // inject the panel chip on every slide
+  slides.forEach(s => {
+    const chip = document.createElement('p');
+    chip.className = 'chip rv';
+    chip.style.setProperty('--c', s.dataset.c || 'var(--ink-faint)');
+    chip.textContent = s.dataset.chip;
+    s.prepend(chip);
+  });
+
+  function show(n) {
+    i = (n + slides.length) % slides.length;
+    slides.forEach((s, k) => s.classList.toggle('active', k === i));
+    document.getElementById('hud').textContent =
+      String(i + 1).padStart(2, '0') + ' / ' + String(slides.length).padStart(2, '0');
+    document.querySelector('#bar i').style.width = ((i + 1) / slides.length * 100) + '%';
+    history.replaceState(null, '', '#' + (i + 1));
+  }
+
+  addEventListener('keydown', e => {
+    if (['ArrowRight', ' ', 'PageDown'].includes(e.key)) { e.preventDefault(); show(i + 1); }
+    else if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); show(i - 1); }
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(slides.length - 1);
+  });
+  // click right 2/3 → next, left 1/3 → prev
+  addEventListener('click', e => {
+    if (e.target.closest('pre')) return; // let people select code
+    show(e.clientX < innerWidth / 3 ? i - 1 : i + 1);
+  });
+  // basic touch swipe
+  let x0 = null;
+  addEventListener('touchstart', e => x0 = e.touches[0].clientX, { passive: true });
+  addEventListener('touchend', e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 50) show(dx < 0 ? i + 1 : i - 1);
+    x0 = null;
+  });
+
+  show(i);
+</script>
+</body>
+</html>
